@@ -1,0 +1,503 @@
+= Spring Batch Getting Started Guide
+
+This short guide tries to help you get started with Spring Batch. First, we work through
+an example wherein we do everything for you (a demonstration, essentially). Then we work
+through another example in which we try to explain things a bit more.
+
+[[using-spring-initializr]]
+== Using Spring Initializr
+
+The best way to get started is to use Spring Initalizr to create a Spring Boot application
+with Spring Batch as its dependency. Doing so takes care of a lot of overhead for us,
+because Spring Boot uses sensible defaults that work well with Spring Batch. To create an
+application by using Spring Initializr:
+
+. Visit https://start.spring.io.
+. Type `spring-batch-getting-started` in the *Artifact* field.
+. Type `Batch` in the *Search dependencies to add* field and choose Batch from the list of
+results.
+. Type `H2` in the *Search dependencies to add* field and choose H2 from the list of
+results.
+. Click *Generate Project*.
+. Unzip the resulting file where you want to work with it.
+
+Now you can work with the project in your favorite IDE and other tools.
+
+== The Quick Guide
+
+In this section, we quickly walk through how to use Spring Batch. We provide all the
+classes and data that you need. You need only copy the pieces into the right places to get
+it to work. This approach offers a quick way to get a Spring Batch project to work, so
+that you can then examine the pieces of it.
+
+=== Creating the Application
+
+In this example, we create an application that processes people's names. To get started,
+we need data, which we store in a CSV file at `src/main/resources/sample-data.csv`:
+
+====
+[source]
+----
+Jill,Doe
+Joe,Doe
+Justin,Doe
+Jane,Doe
+John,Doe
+----
+====
+
+We need an SQL representation of the data, so we create the following SQL file at
+`src/main/resources/schema-all.sql`:
+
+====
+[source,sql]
+----
+DROP TABLE people IF EXISTS;
+
+CREATE TABLE people  (
+    person_id BIGINT IDENTITY NOT NULL PRIMARY KEY,
+    first_name VARCHAR(20),
+    last_name VARCHAR(20)
+);
+----
+====
+
+Now we need a Java class that matches each row in the data. For that, we create the
+`Person` class in `src/main/java/com/example/springbatchgettingstarted/Person.java`:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted;
+
+public class Person {
+
+    private String lastName;
+    private String firstName;
+
+    public Person() {
+    }
+
+    public Person(String firstName, String lastName) {
+        this.firstName = firstName;
+        this.lastName = lastName;
+    }
+
+    public void setFirstName(String firstName) {
+        this.firstName = firstName;
+    }
+
+    public String getFirstName() {
+        return firstName;
+    }
+
+    public String getLastName() {
+        return lastName;
+    }
+
+    public void setLastName(String lastName) {
+        this.lastName = lastName;
+    }
+
+    @Override
+    public String toString() {
+        return "firstName: " + firstName + ", lastName: " + lastName;
+    }
+
+}
+----
+====
+
+Next, we need an intermediate transformer to consume our data, transform it, and pipe it
+to another process. For that, we create the `PersonItemProcessor` class in
+`src/main/java/com/example/springbatchgettingstarted/PersonItemProcessor.java`. The
+following listing shows the `PersonItemProcessor` class:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.springframework.batch.item.ItemProcessor;
+
+public class PersonItemProcessor implements ItemProcessor<Person, Person> {
+
+    private static final Logger log = LoggerFactory.getLogger(PersonItemProcessor.class);
+
+    @Override
+    public Person process(final Person person) throws Exception {
+        final String firstName = person.getFirstName().toUpperCase();
+        final String lastName = person.getLastName().toUpperCase();
+
+        final Person transformedPerson = new Person(firstName, lastName);
+
+        log.info("Converting (" + person + ") into (" + transformedPerson + ")");
+
+        return transformedPerson;
+    }
+
+}
+----
+====
+
+Next, we need a batch job definition. For that, we create the `BatchConfiguration` class
+in `src/main/java/com/example/springbatchgettingstarted/BatchConfiguration.java`. The
+following listing shows the `BatchConfiguration` class:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted;
+
+import javax.sql.DataSource;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
+import org.springframework.batch.item.database.JdbcBatchItemWriter;
+import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
+import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
+import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
+import org.springframework.batch.item.file.mapping.DefaultLineMapper;
+import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+@Configuration
+@EnableBatchProcessing
+public class BatchConfiguration {
+
+    @Autowired
+    public JobBuilderFactory jobBuilderFactory;
+
+    @Autowired
+    public StepBuilderFactory stepBuilderFactory;
+
+    // tag::readerwriterprocessor[]
+    @Bean
+    public FlatFileItemReader<Person> reader() {
+        return new FlatFileItemReaderBuilder<Person>()
+            .name("personItemReader")
+            .resource(new ClassPathResource("sample-data.csv"))
+            .delimited()
+            .names(new String[]{"firstName", "lastName"})
+            .fieldSetMapper(new BeanWrapperFieldSetMapper<Person>() {{
+                setTargetType(Person.class);
+            }})
+            .build();
+    }
+
+    @Bean
+    public PersonItemProcessor processor() {
+        return new PersonItemProcessor();
+    }
+
+    @Bean
+    public JdbcBatchItemWriter<Person> writer(DataSource dataSource) {
+        return new JdbcBatchItemWriterBuilder<Person>()
+            .itemSqlParameterSourceProvider(new BeanPropertyItemSqlParameterSourceProvider<>())
+            .sql("INSERT INTO people (first_name, last_name) VALUES (:firstName, :lastName)")
+            .dataSource(dataSource)
+            .build();
+    }
+    // end::readerwriterprocessor[]
+
+    // tag::jobstep[]
+    @Bean
+    public Job importUserJob(JobCompletionNotificationListener listener, Step step1) {
+        return jobBuilderFactory.get("importUserJob")
+            .incrementer(new RunIdIncrementer())
+            .listener(listener)
+            .flow(step1)
+            .end()
+            .build();
+    }
+
+    @Bean
+    public Step step1(JdbcBatchItemWriter<Person> writer) {
+        return stepBuilderFactory.get("step1")
+            .<Person, Person> chunk(10)
+            .reader(reader())
+            .processor(processor())
+            .writer(writer)
+            .build();
+    }
+    // end::jobstep[]
+}
+----
+====
+
+Next, we need a listener to let us know when the job is complete. For that, we create the
+`JobCompletionNotificationListener` class in
+`src/main/java/com/example/springbatchgettingstarted/JobCompletionNotificationListener.java`.
+The following listing shows the `JobCompletionNotificationListener` class:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.listener.JobExecutionListenerSupport;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+@Component
+public class JobCompletionNotificationListener extends JobExecutionListenerSupport {
+
+	private static final Logger log = LoggerFactory.getLogger(JobCompletionNotificationListener.class);
+
+	private final JdbcTemplate jdbcTemplate;
+
+	@Autowired
+	public JobCompletionNotificationListener(JdbcTemplate jdbcTemplate) {
+		this.jdbcTemplate = jdbcTemplate;
+	}
+
+	@Override
+	public void afterJob(JobExecution jobExecution) {
+		if(jobExecution.getStatus() == BatchStatus.COMPLETED) {
+			log.info("!!! JOB FINISHED! Time to verify the results");
+
+			jdbcTemplate.query("SELECT first_name, last_name FROM people",
+				(rs, row) -> new Person(
+					rs.getString(1),
+					rs.getString(2))
+			).forEach(person -> log.info("Found <" + person + "> in the database."));
+		}
+	}
+}
+----
+====
+
+Finally, we need a class with a `main` method to turn all our code into an application.
+Spring Initializr created that for us. Given the values we put in Spring Initializr,
+we get the following class, in `src/main/java/com/example/springbatchgettingstarted`:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class SpringBatchGettingStartedApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(SpringBatchGettingStartedApplication.class, args);
+	}
+
+}
+----
+====
+
+=== Running the Application
+
+Once you have created the application, you can run it from the command line by using the
+following command:
+
+====
+[source,bash]
+----
+`./mvnw spring-boot:run`
+----
+====
+
+After all the usual Maven output, the application creates the following output (from which
+we have removed the timestamps to shorten the lines):
+
+====
+[source,bash]
+----
+Executing step: [step1]
+Converting (firstName: Jill, lastName: Doe) into (firstName: JILL, lastName: DOE)
+Converting (firstName: Joe, lastName: Doe) into (firstName: JOE, lastName: DOE)
+Converting (firstName: Justin, lastName: Doe) into (firstName: JUSTIN, lastName: DOE)
+Converting (firstName: Jane, lastName: Doe) into (firstName: JANE, lastName: DOE)
+Converting (firstName: John, lastName: Doe) into (firstName: JOHN, lastName: DOE)
+!!! JOB FINISHED! Time to verify the results
+Found <firstName: JILL, lastName: DOE> in the database.
+Found <firstName: JOE, lastName: DOE> in the database.
+Found <firstName: JUSTIN, lastName: DOE> in the database.
+Found <firstName: JANE, lastName: DOE> in the database.
+Found <firstName: JOHN, lastName: DOE> in the database.
+Job: [FlowJob: [name=importUserJob]] completed with the following parameters: [{run.id=1}] and the following status: [COMPLETED]
+----
+====
+
+== Another Example
+
+This section walks through another example but also explains what we are doing as we
+create each piece of the example application. To get started, use the
+https://start.spring.io[Spring Initializr] to make another project. See
+<<using-spring-initializr>> for how to do so. For this example, we put
+`spring-batch-getting-started-2` in the *Artifact* field.
+
+NOTE: This sample is actually simpler than the preceding example. We have made a
+minimal example, to show each piece's contribution as clearly as possible.
+
+=== Understanding the `@EnableBatchProcessing` Annotation
+
+Adding the `@EnableBatchProcessing` annotation to a `@Configuration` class provides a base
+configuration for building batch jobs. This base configuration includes an instance of
+`StepScope` and a number of beans that you can now autowire:
+
+* JobRepository (bean name: `jobRepository`)
+
+* JobLauncher (bean name: `jobLauncher`)
+
+* JobRegistry (bean name: `jobRegistry`)
+
+* PlatformTransactionManager (bean name: `transactionManager`)
+
+* JobBuilderFactory (bean name: `jobBuilders`)
+
+* StepBuilderFactory (bean name: `stepBuilders`)
+
+See the
+https://docs.spring.io/spring-batch/4.0.x/reference/html/job.html#javaConfig[Spring Batch
+Reference Guide] for more detail.
+
+=== Configuring the Application
+
+To create a Spring Batch application, we need a `@Configuration` class that includes the
+`@EnableBatchProcessing` annotation. We also generally define jobs and steps in a
+`@Configuration` class, though we can do so in separate classes. If we do define the
+jobs and steps in other classes, we still need the `@Configuration` annotation
+but do not need the `@EnableBatchProcessing` annotation (we need that only once for the
+entire application). The following example shows a @Configuration class that has the
+`@EnableBatchProcessing` annotation and defines a job and a step:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted2;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@EnableBatchProcessing
+public class BatchConfiguration {
+
+	@Autowired
+	public JobBuilderFactory jobs;
+
+	@Autowired
+	public StepBuilderFactory steps;
+
+	@Bean
+	public Step step() {
+		return steps.get("step")
+				.tasklet((contribution, chunkContext) -> {
+					System.out.println("hello world");
+					return RepeatStatus.FINISHED;
+				})
+				.build();
+	}
+
+	@Bean
+	public Job job() {
+		return jobs.get("job")
+				.start(step())
+				.build();
+	}
+}
+----
+====
+
+In the preceding `@Configuration` class, we autowire a `JobBuilderFactory` and a
+`StepBuilderFactory`. Doing so gives us a `JobRepository` instance and a `StepRepository`
+instance. If we have a job (a Spring Batch application always has at least one job), we
+need a repository in which to store and track the job. The same applies to steps, except
+that not every Spring Batch application has steps. (Most Spring Batch applications do have
+steps.)
+
+Then we define the step that we later use in our job. Within the step, we create a
+tasklet. The `tasklet` interface defines the `RepeatStatus` method. The code in the lambda
+performs the actual work (printing "Hello, World") and returns `RepeatStatus.FINISHED`.
+(Steps that have continuing actions can return `RepeatStatus.CONTINUABLE`). Then the
+`build` method finishes our step definition, making it ready to use in our job.
+
+In our job definition, we get a job from the job repository (remember that a
+`JobBuilderFactory` instance creates a `JobRepository` instance). Then we use the `start`
+method to specify the step to run. If we had defined other steps, we could start with
+one of those steps. We could also use the `next` method to chain steps together. Finally,
+we use the `build` method to finalize our job, so that it is ready to be run.
+
+For this example, the only other thing we need is the application class. The
+following listing shows our application class:
+
+====
+[source,java]
+----
+package com.example.springbatchgettingstarted2;
+
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+
+@SpringBootApplication
+public class SpringBatchGettingStarted2Application {
+
+	@SuppressWarnings("resource")
+	public static void main(String[] args) {
+		SpringApplication.run(SpringBatchGettingStarted2Application.class, args);
+		ApplicationContext context = new AnnotationConfigApplicationContext(BatchConfiguration.class);
+		JobLauncher jobLauncher = context.getBean(JobLauncher.class);
+		Job job = context.getBean(Job.class);
+		try {
+			jobLauncher.run(job, new JobParameters());
+		} catch (Exception e) {
+			System.out.println("jobLauncher failed");
+		}
+	}
+}
+----
+====
+
+The application class, though relatively small, does a lot for us. To begin with, it is
+marked with the `@SpringBootApplication` annotation, which gives us all the defaults from
+Spring Boot. That saves us the trouble of configuring our application. (Note that you can
+override all of Spring Boot's default settings if you need to do so.) Then we have a
+`main` method so that we have an application. Within the `main` method, we first call
+`SpringApplication.run` to get our application started with all of Spring Boot's settings.
+Then we create an application context by specifying our `BatchConfiguration` class as the
+class that defines the context. That gives us our step and our job and the repositories
+that contain the step and the job. With those items, we can launch our job by calling a
+`JobLauncher` (created by the `@EnableBatchProcessing` annotation) and specifying our job.
+Finally, we can run the job by using the `JobLauncher`. Note that we need a
+`JobParameters` object to do so. In this case, we can use an empty set of parameters. In
+more complex Spring Batch applications, we might have' parameters that we need to set.
+Because the `run` method can fail, we wrap the call in a try-catch block.
+
+Now we have a working Spring Batch application that prints "Hello, World" in the console.
